@@ -1,0 +1,15 @@
+# Python bytecode / packaging
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Virtual environment
+.venv/
+venv/
+
+# Experiment artifacts (root-level)
+/wandb/
+/outputs/
+/eeg_checkpoints/
+/*.log
+/*.png

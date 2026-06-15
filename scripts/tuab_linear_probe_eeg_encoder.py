@@ -19,7 +19,7 @@ import torch
 import torch.nn as nn
 import wandb
 from sklearn.metrics import balanced_accuracy_score
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, TensorDataset
 
 from eeg_lejepa_ddp import EEGEncoder
 
@@ -239,6 +239,18 @@ class LinearProbe(nn.Module):
     return self.head(emb)
 
 
+class LinearHead(nn.Module):
+  def __init__(self, hidden_size: int, num_classes: int = 2) -> None:
+    super().__init__()
+    self.head = nn.Sequential(
+      nn.LayerNorm(hidden_size),
+      nn.Linear(hidden_size, num_classes),
+    )
+
+  def forward(self, x: torch.Tensor) -> torch.Tensor:
+    return self.head(x)
+
+
 def balanced_acc(preds: list[int], labels: list[int]) -> float:
   return float(balanced_accuracy_score(labels, preds))
 
@@ -264,6 +276,23 @@ def run_epoch(model, loader, device, optimizer=None) -> tuple[float, float]:
   return total_loss / max(1, len(labels)), balanced_acc(preds, labels)
 
 
+def extract_features(
+  encoder: EEGEncoder,
+  loader: DataLoader,
+  device,
+) -> TensorDataset:
+  feats: list[torch.Tensor] = []
+  labels: list[torch.Tensor] = []
+  encoder.eval()
+  with torch.inference_mode():
+    for x, y in loader:
+      x = x.to(device, non_blocking=True)
+      emb, _ = encoder(x[:, None])
+      feats.append(emb.detach().cpu())
+      labels.append(y.detach().cpu())
+  return TensorDataset(torch.cat(feats, dim=0), torch.cat(labels, dim=0))
+
+
 def load_encoder(ckpt_path: Path, hidden_size: int, proj_dim: int, device) -> EEGEncoder:
   ckpt = torch.load(ckpt_path, map_location="cpu")
   encoder = EEGEncoder(hidden_size=hidden_size, proj_dim=proj_dim)
@@ -281,8 +310,7 @@ def evaluate_checkpoint(
   device,
 ) -> dict:
   encoder = load_encoder(ckpt_path, args.hidden_size, args.proj_dim, device)
-  model = LinearProbe(encoder, hidden_size=args.hidden_size).to(device)
-  loaders = {
+  raw_loaders = {
     "train": DataLoader(
       TuabWindowDataset(
         splits.train,
@@ -327,8 +355,23 @@ def evaluate_checkpoint(
       pin_memory=True,
     ),
   }
+  feature_sets = {
+    name: extract_features(encoder, loader, device)
+    for name, loader in raw_loaders.items()
+  }
+  del encoder
+  loaders = {
+    name: DataLoader(
+      dataset,
+      batch_size=args.batch_size,
+      shuffle=(name == "train"),
+      num_workers=0,
+    )
+    for name, dataset in feature_sets.items()
+  }
+  model = LinearHead(hidden_size=args.hidden_size).to(device)
   optimizer = torch.optim.AdamW(
-    model.head.parameters(), lr=args.lr, weight_decay=args.weight_decay
+    model.parameters(), lr=args.lr, weight_decay=args.weight_decay
   )
   best_val = -1.0
   best_test = -1.0

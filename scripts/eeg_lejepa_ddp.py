@@ -227,6 +227,12 @@ def main(cfg: DictConfig):
       name=f"eeg_aug_v{cfg.V}_bs{cfg.bs}_g{world_size}",
       config=dict(cfg) | {"world_size": world_size, "global_batch_size": cfg.bs},
     )
+  checkpoint_dir = Path(str(getattr(
+    cfg, "checkpoint_dir", "/home/ubuntu/lejepa-runs/eeg-basic/checkpoints"
+  )))
+  save_every_epochs = int(getattr(cfg, "save_every_epochs", 1))
+  if is_rank0():
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
   windows = pd.read_parquet(str(cfg.windows_path))
   windows = windows[windows["dataset_id"].eq(str(cfg.dataset_id))].copy()
@@ -342,6 +348,21 @@ def main(cfg: DictConfig):
       dist.all_reduce(val_count, op=dist.ReduceOp.SUM)
     if is_rank0() and val_count.item() > 0:
       wandb.log({"val/lejepa": (val_loss / val_count).item(), "val/epoch": epoch})
+      if save_every_epochs > 0 and (
+        (epoch + 1) % save_every_epochs == 0 or (epoch + 1) == int(cfg.epochs)
+      ):
+        state = {
+          "epoch": epoch,
+          "model": model.module.state_dict(),
+          "optimizer": optimizer.state_dict(),
+          "scheduler": scheduler.state_dict(),
+          "scaler": scaler.state_dict(),
+          "config": dict(cfg),
+        }
+        epoch_path = checkpoint_dir / f"epoch={epoch:04d}.pt"
+        last_path = checkpoint_dir / "last.pt"
+        torch.save(state, epoch_path)
+        torch.save(state, last_path)
 
   if is_rank0():
     wandb.finish()

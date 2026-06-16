@@ -78,6 +78,7 @@ testing whether the view construction gives a non-trivial `inv` loss curve.
 | EEG-002 | 2026-06-15 | `01fa8d6` | `eeg-lejepa-basic` / `https://wandb.ai/ritivel/eeg-lejepa-basic/runs/3mml1jou` | 2 global 30-second views + 2 local 8-second temporal-crop views resized to 30 seconds | `V=4`, `n_global_views=2`, `global_crop_samples=6000`, `local_crop_samples=1600`, `bs=256`, `epochs=200`, `jitter_samples=1200`, `channel_dropout_p=0.2`, `time_mask_p=0.7`, `time_mask_frac=0.15`, `noise_std=0.03`, `amp_scale=0.3`, 8xA100 | STOPPED | First improved global/local temporal-view run. Designed to make the invariance task harder than EEG-001. |
 | EEG-003 | 2026-06-15 | `01fa8d6` | `eeg-lejepa-basic` / `https://wandb.ai/ritivel/eeg-lejepa-basic/runs/nj2tldip` | Harder 2 global 30-second views + 2 local 4-second temporal-crop views resized to 30 seconds | `V=4`, `n_global_views=2`, `global_crop_samples=6000`, `local_crop_samples=800`, `bs=256`, `epochs=200`, `jitter_samples=2000`, `channel_dropout_p=0.4`, `time_mask_p=0.8`, `time_mask_frac=0.2`, `noise_std=0.03`, `amp_scale=0.3`, 8xA100 | STOPPED | Harder-view run. Improved training dynamics relative to EEG-001/002, but downstream still peaked early; checkpoints moved to `checkpoints/harder_global_local_v3/`. |
 | EEG-004 | 2026-06-16 | `0c20352` | `eeg-lejepa-basic` / `https://wandb.ai/ritivel/eeg-lejepa-basic/runs/bmstrjyl` | Same harder views as EEG-003, but replace mean-over-channels with attention channel pooling | `V=4`, `n_global_views=2`, `global_crop_samples=6000`, `local_crop_samples=800`, `channel_pool=attention`, `bs=256`, `epochs=200`, `jitter_samples=2000`, `channel_dropout_p=0.4`, `time_mask_p=0.8`, `time_mask_frac=0.2`, `noise_std=0.03`, `amp_scale=0.3`, 8xA100 | STOPPED | Did not perform better than EEG-003. Stopped after epoch 6; checkpoints moved to `checkpoints/attention_channel_pool_v4/`. |
+| EEG-005 | 2026-06-16 | `TBD` | `eeg-lejepa-basic` / TBD | Same harder views as EEG-003, but replace the Conv1D channel-pooling encoder with an EEG channel-time patch transformer | `encoder_type=patch_transformer`, `patch_channels=8`, `patch_time=400`, `transformer_depth=6`, `transformer_heads=8`, `V=4`, `n_global_views=2`, `global_crop_samples=6000`, `local_crop_samples=800`, `bs=256`, `epochs=200`, harder-view augmentations, 8xA100 | PLANNED | Exp4 architecture ablation. Tests whether ViT-like channel-time patch tokens reduce early saturation and improve downstream utility. |
 
 ## View Construction Details
 
@@ -151,3 +152,29 @@ mean over channels -> learned attention pooling over channels
 
 This tests whether the previous mean-over-channels encoder was washing out
 spatial/channel-specific information needed for downstream TUAB performance.
+
+## Exp4 Architecture Ablation: EEG Patch Transformer
+
+EEG-005 keeps the EEG-003/EEG-004 harder view construction fixed and changes
+only the encoder:
+
+```text
+Conv1D per-channel encoder + channel pooling
+-> Conv2D channel-time patch embed + transformer encoder + token mean pool
+```
+
+Patch layout:
+
+```text
+input:          (128 channels, 6000 samples)
+patch size:     (8 channels, 400 samples)
+token grid:     16 x 15
+tokens/view:    240
+```
+
+This is meant to be closer to the ImageNette minimal LeJEPA architecture:
+
+```text
+Image: local image patches -> transformer
+EEG:   local channel-time patches -> transformer
+```

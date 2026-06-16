@@ -215,6 +215,59 @@ class EEGEncoder(nn.Module):
     return emb, proj
 
 
+class EEGPatchTransformerEncoder(nn.Module):
+  """EEG channel-time patch transformer, analogous to ViT patch tokenization."""
+
+  def __init__(
+    self,
+    *,
+    hidden_size: int = 512,
+    proj_dim: int = 128,
+    patch_channels: int = 8,
+    patch_time: int = 400,
+    depth: int = 6,
+    heads: int = 8,
+    mlp_ratio: int = 4,
+    input_channels: int = 128,
+    input_samples: int = 6000,
+  ) -> None:
+    super().__init__()
+    if input_channels % patch_channels != 0:
+      raise ValueError("input_channels must be divisible by patch_channels")
+    if input_samples % patch_time != 0:
+      raise ValueError("input_samples must be divisible by patch_time")
+    self.patch_embed = nn.Conv2d(
+      1,
+      hidden_size,
+      kernel_size=(patch_channels, patch_time),
+      stride=(patch_channels, patch_time),
+    )
+    num_tokens = (input_channels // patch_channels) * (input_samples // patch_time)
+    self.pos_embed = nn.Parameter(torch.zeros(1, num_tokens, hidden_size))
+    encoder_layer = nn.TransformerEncoderLayer(
+      d_model=hidden_size,
+      nhead=heads,
+      dim_feedforward=hidden_size * mlp_ratio,
+      dropout=0.0,
+      activation="gelu",
+      batch_first=True,
+      norm_first=True,
+    )
+    self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=depth)
+    self.norm = nn.LayerNorm(hidden_size)
+    self.proj = MLP(hidden_size, [2048, 2048, proj_dim], norm_layer=nn.BatchNorm1d)
+
+  def forward(self, x: torch.Tensor):
+    num_samples, num_views, num_channels, num_time = x.shape
+    y = x.reshape(num_samples * num_views, 1, num_channels, num_time)
+    y = self.patch_embed(y).flatten(2).transpose(1, 2)
+    y = y + self.pos_embed[:, : y.shape[1]]
+    y = self.encoder(y)
+    emb = self.norm(y).mean(dim=1)
+    proj = self.proj(emb).reshape(num_samples, num_views, -1).transpose(0, 1)
+    return emb, proj
+
+
 def gather_with_grad(x: torch.Tensor) -> torch.Tensor:
   if not is_dist():
     return x
@@ -300,13 +353,26 @@ def main(cfg: DictConfig):
     pin_memory=True,
   )
 
-  model = nn.SyncBatchNorm.convert_sync_batchnorm(
-    EEGEncoder(
+  encoder_type = str(getattr(cfg, "encoder_type", "conv"))
+  if encoder_type == "patch_transformer":
+    encoder = EEGPatchTransformerEncoder(
+      hidden_size=cfg.hidden_size,
+      proj_dim=cfg.proj_dim,
+      patch_channels=int(getattr(cfg, "patch_channels", 8)),
+      patch_time=int(getattr(cfg, "patch_time", 400)),
+      depth=int(getattr(cfg, "transformer_depth", 6)),
+      heads=int(getattr(cfg, "transformer_heads", 8)),
+      mlp_ratio=int(getattr(cfg, "transformer_mlp_ratio", 4)),
+      input_channels=int(getattr(cfg, "input_channels", 128)),
+      input_samples=int(cfg.window_samples),
+    )
+  else:
+    encoder = EEGEncoder(
       hidden_size=cfg.hidden_size,
       proj_dim=cfg.proj_dim,
       channel_pool=str(getattr(cfg, "channel_pool", "mean")),
     )
-  ).to(device)
+  model = nn.SyncBatchNorm.convert_sync_batchnorm(encoder).to(device)
   model = DDP(model, device_ids=[local_rank])
   sigreg = SIGReg().to(device)
   optimizer = torch.optim.AdamW(

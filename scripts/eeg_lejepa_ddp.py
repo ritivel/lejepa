@@ -169,14 +169,30 @@ class EEGWindowDataset(Dataset):
 class EEGEncoder(nn.Module):
   """Small full-window EEG encoder for LeJEPA smoke/pretraining runs."""
 
-  def __init__(self, hidden_size: int = 512, proj_dim: int = 128):
+  def __init__(
+    self,
+    hidden_size: int = 512,
+    proj_dim: int = 128,
+    channel_pool: str = "mean",
+  ):
     super().__init__()
+    self.channel_pool = str(channel_pool)
+    if self.channel_pool not in ("mean", "attention"):
+      raise ValueError(
+        f"channel_pool must be one of ('mean', 'attention'), got "
+        f"{self.channel_pool!r}"
+      )
     self.temporal = nn.Sequential(
       nn.Conv1d(1, 128, kernel_size=25, stride=10, padding=12),
       nn.GELU(),
       nn.Conv1d(128, hidden_size, kernel_size=15, stride=5, padding=7),
       nn.GELU(),
     )
+    if self.channel_pool == "attention":
+      self.channel_score = nn.Sequential(
+        nn.LayerNorm(hidden_size),
+        nn.Linear(hidden_size, 1),
+      )
     self.channel_mixer = nn.Sequential(
       nn.LayerNorm(hidden_size),
       nn.Linear(hidden_size, hidden_size),
@@ -188,7 +204,12 @@ class EEGEncoder(nn.Module):
     num_samples, num_views, num_channels, num_time = x.shape
     y = x.reshape(num_samples * num_views * num_channels, 1, num_time)
     y = self.temporal(y).mean(dim=-1)
-    y = y.reshape(num_samples * num_views, num_channels, -1).mean(dim=1)
+    y = y.reshape(num_samples * num_views, num_channels, -1)
+    if self.channel_pool == "attention":
+      weights = self.channel_score(y).softmax(dim=1)
+      y = (weights * y).sum(dim=1)
+    else:
+      y = y.mean(dim=1)
     emb = self.channel_mixer(y)
     proj = self.proj(emb).reshape(num_samples, num_views, -1).transpose(0, 1)
     return emb, proj
@@ -222,9 +243,10 @@ def main(cfg: DictConfig):
   np.random.seed(int(getattr(cfg, "seed", 0)) + local_rank)
 
   if is_rank0():
+    channel_pool = str(getattr(cfg, "channel_pool", "mean"))
     wandb.init(
       project="eeg-lejepa-basic",
-      name=f"eeg_aug_v{cfg.V}_bs{cfg.bs}_g{world_size}",
+      name=f"eeg_{channel_pool}_v{cfg.V}_bs{cfg.bs}_g{world_size}",
       config=dict(cfg) | {"world_size": world_size, "global_batch_size": cfg.bs},
     )
   checkpoint_dir = Path(str(getattr(
@@ -279,7 +301,11 @@ def main(cfg: DictConfig):
   )
 
   model = nn.SyncBatchNorm.convert_sync_batchnorm(
-    EEGEncoder(hidden_size=cfg.hidden_size, proj_dim=cfg.proj_dim)
+    EEGEncoder(
+      hidden_size=cfg.hidden_size,
+      proj_dim=cfg.proj_dim,
+      channel_pool=str(getattr(cfg, "channel_pool", "mean")),
+    )
   ).to(device)
   model = DDP(model, device_ids=[local_rank])
   sigreg = SIGReg().to(device)

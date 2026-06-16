@@ -77,6 +77,7 @@ testing whether the view construction gives a non-trivial `inv` loss curve.
 | EEG-001 | 2026-06-15 | `c52794f` | `eeg-lejepa-basic` / `https://wandb.ai/ritivel/eeg-lejepa-basic/runs/wkksypd2` | 4 augmented full-window views of the same `(128, 6000)` EEG window | `V=4`, `bs=256`, `epochs=200`, `jitter_samples=400`, `channel_dropout_p=0.1`, `time_mask_p=0.5`, `time_mask_frac=0.08`, `noise_std=0.02`, `amp_scale=0.2`, 8xA100 | STOPPED | `inv` saturated early. Views were still too similar because every view saw nearly the full 30-second all-channel window. |
 | EEG-002 | 2026-06-15 | `01fa8d6` | `eeg-lejepa-basic` / `https://wandb.ai/ritivel/eeg-lejepa-basic/runs/3mml1jou` | 2 global 30-second views + 2 local 8-second temporal-crop views resized to 30 seconds | `V=4`, `n_global_views=2`, `global_crop_samples=6000`, `local_crop_samples=1600`, `bs=256`, `epochs=200`, `jitter_samples=1200`, `channel_dropout_p=0.2`, `time_mask_p=0.7`, `time_mask_frac=0.15`, `noise_std=0.03`, `amp_scale=0.3`, 8xA100 | STOPPED | First improved global/local temporal-view run. Designed to make the invariance task harder than EEG-001. |
 | EEG-003 | 2026-06-15 | `01fa8d6` | `eeg-lejepa-basic` / `https://wandb.ai/ritivel/eeg-lejepa-basic/runs/nj2tldip` | Harder 2 global 30-second views + 2 local 4-second temporal-crop views resized to 30 seconds | `V=4`, `n_global_views=2`, `global_crop_samples=6000`, `local_crop_samples=800`, `bs=256`, `epochs=200`, `jitter_samples=2000`, `channel_dropout_p=0.4`, `time_mask_p=0.8`, `time_mask_frac=0.2`, `noise_std=0.03`, `amp_scale=0.3`, 8xA100 | STOPPED | Harder-view run. Improved training dynamics relative to EEG-001/002, but downstream still peaked early; checkpoints moved to `checkpoints/harder_global_local_v3/`. |
+| EEG-004 | 2026-06-16 | `TBD` | `eeg-lejepa-basic` / TBD | Same harder views as EEG-003, but replace mean-over-channels with attention channel pooling | `V=4`, `n_global_views=2`, `global_crop_samples=6000`, `local_crop_samples=800`, `channel_pool=attention`, `bs=256`, `epochs=200`, `jitter_samples=2000`, `channel_dropout_p=0.4`, `time_mask_p=0.8`, `time_mask_frac=0.2`, `noise_std=0.03`, `amp_scale=0.3`, 8xA100 | PLANNED | Tests whether preserving learned channel importance improves training/downstream behavior beyond stronger views alone. |
 
 ## View Construction Details
 
@@ -138,3 +139,15 @@ views more like the ImageNette minimal run:
 The main metric to watch first is `train/inv`. If it saturates immediately, the
 views are still too similar. If it decreases gradually over many epochs, the view
 construction is more promising.
+
+## Planned Architecture Ablation: Attention Channel Pooling
+
+EEG-004 keeps the EEG-003 view construction fixed and changes only the channel
+aggregation in the encoder:
+
+```text
+mean over channels -> learned attention pooling over channels
+```
+
+This tests whether the previous mean-over-channels encoder was washing out
+spatial/channel-specific information needed for downstream TUAB performance.

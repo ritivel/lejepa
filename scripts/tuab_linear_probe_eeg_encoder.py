@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,7 +22,7 @@ import wandb
 from sklearn.metrics import balanced_accuracy_score
 from torch.utils.data import DataLoader, Dataset, TensorDataset
 
-from eeg_lejepa_ddp import EEGEncoder
+from eeg_lejepa_ddp import EEGEncoder, EEGPatchTransformerEncoder
 
 
 PYEDFLIB_UV_TO_V = 1e-6
@@ -61,6 +62,29 @@ TUH_TO_EGI_128_EQUIVALENTS = {
   "O2": "E83",
 }
 TUH_CZ_NEAREST_EGI = "E55"
+
+
+def set_global_seed(seed: int) -> None:
+  random.seed(seed)
+  np.random.seed(seed)
+  torch.manual_seed(seed)
+  if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(seed)
+
+
+def make_generator(seed: int) -> torch.Generator:
+  generator = torch.Generator()
+  generator.manual_seed(seed)
+  return generator
+
+
+def seed_worker(worker_id: int) -> None:
+  worker_seed = torch.initial_seed() % 2**32
+  random.seed(worker_seed)
+  np.random.seed(worker_seed)
+  worker_info = torch.utils.data.get_worker_info()
+  if worker_info is not None and hasattr(worker_info.dataset, "rng"):
+    worker_info.dataset.rng = np.random.default_rng(worker_seed)
 
 
 def normalize_label(label: str) -> str:
@@ -293,9 +317,33 @@ def extract_features(
   return TensorDataset(torch.cat(feats, dim=0), torch.cat(labels, dim=0))
 
 
-def load_encoder(ckpt_path: Path, hidden_size: int, proj_dim: int, device) -> EEGEncoder:
+def build_encoder_from_checkpoint(ckpt: dict, hidden_size: int, proj_dim: int) -> nn.Module:
+  cfg = ckpt.get("config", {})
+  encoder_type = str(cfg.get("encoder_type", "conv"))
+  hidden_size = int(cfg.get("hidden_size", hidden_size))
+  proj_dim = int(cfg.get("proj_dim", proj_dim))
+  if encoder_type == "patch_transformer":
+    return EEGPatchTransformerEncoder(
+      hidden_size=hidden_size,
+      proj_dim=proj_dim,
+      patch_channels=int(cfg.get("patch_channels", 8)),
+      patch_time=int(cfg.get("patch_time", 400)),
+      depth=int(cfg.get("transformer_depth", 6)),
+      heads=int(cfg.get("transformer_heads", 8)),
+      mlp_ratio=int(cfg.get("transformer_mlp_ratio", 4)),
+      input_channels=int(cfg.get("input_channels", 128)),
+      input_samples=int(cfg.get("window_samples", 6000)),
+    )
+  return EEGEncoder(
+    hidden_size=hidden_size,
+    proj_dim=proj_dim,
+    channel_pool=str(cfg.get("channel_pool", "mean")),
+  )
+
+
+def load_encoder(ckpt_path: Path, hidden_size: int, proj_dim: int, device) -> nn.Module:
   ckpt = torch.load(ckpt_path, map_location="cpu")
-  encoder = EEGEncoder(hidden_size=hidden_size, proj_dim=proj_dim)
+  encoder = build_encoder_from_checkpoint(ckpt, hidden_size, proj_dim)
   encoder.load_state_dict(ckpt["model"], strict=True)
   encoder.to(device)
   encoder.eval()
@@ -309,6 +357,7 @@ def evaluate_checkpoint(
   args: argparse.Namespace,
   device,
 ) -> dict:
+  set_global_seed(args.seed)
   encoder = load_encoder(ckpt_path, args.hidden_size, args.proj_dim, device)
   raw_loaders = {
     "train": DataLoader(
@@ -325,6 +374,8 @@ def evaluate_checkpoint(
       num_workers=args.num_workers,
       pin_memory=True,
       drop_last=True,
+      worker_init_fn=seed_worker,
+      generator=make_generator(args.seed + 101),
     ),
     "val": DataLoader(
       TuabWindowDataset(
@@ -339,6 +390,8 @@ def evaluate_checkpoint(
       shuffle=False,
       num_workers=args.num_workers,
       pin_memory=True,
+      worker_init_fn=seed_worker,
+      generator=make_generator(args.seed + 102),
     ),
     "test": DataLoader(
       TuabWindowDataset(
@@ -353,6 +406,8 @@ def evaluate_checkpoint(
       shuffle=False,
       num_workers=args.num_workers,
       pin_memory=True,
+      worker_init_fn=seed_worker,
+      generator=make_generator(args.seed + 103),
     ),
   }
   feature_sets = {
@@ -366,8 +421,9 @@ def evaluate_checkpoint(
       batch_size=args.batch_size,
       shuffle=(name == "train"),
       num_workers=0,
+      generator=make_generator(args.seed + 201 + idx),
     )
-    for name, dataset in feature_sets.items()
+    for idx, (name, dataset) in enumerate(feature_sets.items())
   }
   model = LinearHead(hidden_size=args.hidden_size).to(device)
   optimizer = torch.optim.AdamW(
@@ -426,6 +482,7 @@ def main() -> None:
   parser.add_argument("--wandb-project", default="eeg-lejepa-tuab")
   args = parser.parse_args()
 
+  set_global_seed(args.seed)
   device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
   root = Path(args.tuab_root)
   manifest = Path(args.manifest_path)

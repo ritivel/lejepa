@@ -78,7 +78,7 @@ testing whether the view construction gives a non-trivial `inv` loss curve.
 | EEG-002 | 2026-06-15 | `01fa8d6` | `eeg-lejepa-basic` / `https://wandb.ai/ritivel/eeg-lejepa-basic/runs/3mml1jou` | 2 global 30-second views + 2 local 8-second temporal-crop views resized to 30 seconds | `V=4`, `n_global_views=2`, `global_crop_samples=6000`, `local_crop_samples=1600`, `bs=256`, `epochs=200`, `jitter_samples=1200`, `channel_dropout_p=0.2`, `time_mask_p=0.7`, `time_mask_frac=0.15`, `noise_std=0.03`, `amp_scale=0.3`, 8xA100 | STOPPED | First improved global/local temporal-view run. Designed to make the invariance task harder than EEG-001. |
 | EEG-003 | 2026-06-15 | `01fa8d6` | `eeg-lejepa-basic` / `https://wandb.ai/ritivel/eeg-lejepa-basic/runs/nj2tldip` | Harder 2 global 30-second views + 2 local 4-second temporal-crop views resized to 30 seconds | `V=4`, `n_global_views=2`, `global_crop_samples=6000`, `local_crop_samples=800`, `bs=256`, `epochs=200`, `jitter_samples=2000`, `channel_dropout_p=0.4`, `time_mask_p=0.8`, `time_mask_frac=0.2`, `noise_std=0.03`, `amp_scale=0.3`, 8xA100 | STOPPED | Harder-view run. Improved training dynamics relative to EEG-001/002, but downstream still peaked early; checkpoints moved to `checkpoints/harder_global_local_v3/`. |
 | EEG-004 | 2026-06-16 | `0c20352` | `eeg-lejepa-basic` / `https://wandb.ai/ritivel/eeg-lejepa-basic/runs/bmstrjyl` | Same harder views as EEG-003, but replace mean-over-channels with attention channel pooling | `V=4`, `n_global_views=2`, `global_crop_samples=6000`, `local_crop_samples=800`, `channel_pool=attention`, `bs=256`, `epochs=200`, `jitter_samples=2000`, `channel_dropout_p=0.4`, `time_mask_p=0.8`, `time_mask_frac=0.2`, `noise_std=0.03`, `amp_scale=0.3`, 8xA100 | STOPPED | Did not perform better than EEG-003. Stopped after epoch 6; checkpoints moved to `checkpoints/attention_channel_pool_v4/`. |
-| EEG-005 | 2026-06-16 | `356811a` | `eeg-lejepa-basic` / TBD | Same harder views as EEG-003, but replace the Conv1D channel-pooling encoder with an EEG channel-time patch transformer | `encoder_type=patch_transformer`, `patch_channels=8`, `patch_time=400`, `transformer_depth=6`, `transformer_heads=8`, `V=4`, `n_global_views=2`, `global_crop_samples=6000`, `local_crop_samples=800`, `bs=256`, `epochs=200`, harder-view augmentations, 8xA100 | PLANNED | Exp4 architecture ablation. Tests whether ViT-like channel-time patch tokens reduce early saturation and improve downstream utility. |
+| EEG-005 | 2026-06-16 | `356811a` | `eeg-lejepa-basic` / run logged from `eeg_patch_transformer_20260616_160644_8gpu.log` | Same harder views as EEG-003, but replace the Conv1D channel-pooling encoder with an EEG channel-time patch transformer | `encoder_type=patch_transformer`, `patch_channels=8`, `patch_time=400`, `transformer_depth=6`, `transformer_heads=8`, `V=4`, `n_global_views=2`, `global_crop_samples=6000`, `local_crop_samples=800`, `bs=256`, `epochs=200`, harder-view augmentations, 8xA100 | STOPPED / EVAL COMPLETE | Exp4 architecture ablation. Checkpoints saved under `checkpoints/patch_transformer_v4/`; 5-seed TUAB LP completed for epochs 0-24. |
 
 ## View Construction Details
 
@@ -177,4 +177,114 @@ This is meant to be closer to the ImageNette minimal LeJEPA architecture:
 ```text
 Image: local image patches -> transformer
 EEG:   local channel-time patches -> transformer
+```
+
+## Preserved Artifacts In S3
+
+Before shutting down the 8xA100 training/eval VM, the important run artifacts were
+synced to:
+
+```text
+s3://nirmit-dev-vm-storages/lejepa-runs/eeg-basic/
+```
+
+### Checkpoints
+
+| Run | Local checkpoint dir on 8xA100 | S3 prefix | Objects | Size |
+|---|---|---|---:|---:|
+| EEG-002 / `global_local_v2` | `/home/ubuntu/lejepa-runs/eeg-basic/checkpoints/global_local_v2` | `s3://nirmit-dev-vm-storages/lejepa-runs/eeg-basic/checkpoints/global_local_v2/` | 12 | ~0.94 GB |
+| EEG-003 / `harder_global_local_v3` | `/home/ubuntu/lejepa-runs/eeg-basic/checkpoints/harder_global_local_v3` | `s3://nirmit-dev-vm-storages/lejepa-runs/eeg-basic/checkpoints/harder_global_local_v3/` | 21 | ~1.65 GB |
+| EEG-005 / `patch_transformer_v4` | `/home/ubuntu/lejepa-runs/eeg-basic/checkpoints/patch_transformer_v4` | `s3://nirmit-dev-vm-storages/lejepa-runs/eeg-basic/checkpoints/patch_transformer_v4/` | 26 | ~8.10 GB |
+
+Checkpoint coverage:
+
+```text
+global_local_v2:        epoch=0000.pt through epoch=0010.pt, plus last.pt
+harder_global_local_v3: epoch=0000.pt through epoch=0019.pt, plus last.pt
+patch_transformer_v4:   epoch=0000.pt through epoch=0024.pt, plus last.pt
+```
+
+### Training Logs
+
+Training logs from `/home/ubuntu/lejepa-runs/eeg-basic/logs/` were synced to:
+
+```text
+s3://nirmit-dev-vm-storages/lejepa-runs/eeg-basic/logs/
+```
+
+At preservation time this prefix had 6 log files, including:
+
+```text
+eeg_global_local_ckpt_20260615_123209_8gpu.log
+eeg_harder_views_20260615_183302_8gpu.log
+eeg_patch_transformer_20260616_160644_8gpu.log
+```
+
+### Remote Downstream Eval Outputs
+
+The remote TUAB downstream eval output directories from the 8xA100 VM were
+synced to:
+
+```text
+s3://nirmit-dev-vm-storages/lejepa-runs/eeg-basic/tuab_lp_harder_global_local_v3/
+s3://nirmit-dev-vm-storages/lejepa-runs/eeg-basic/tuab_lp_patch_transformer_v4_multiseed/
+```
+
+The `patch_transformer_v4` downstream prefix includes raw chunk outputs for:
+
+```text
+seeds: 101, 202, 303, 404, 505
+epochs: 0000 through 0024
+```
+
+The raw files are chunked by seed and checkpoint range, e.g.
+`patch_transformer_v4_seed101_chunk0.json`.
+
+### Local Analysis Artifacts
+
+The local result summaries and plots were also copied back to S3:
+
+```text
+s3://nirmit-dev-vm-storages/lejepa-runs/eeg-basic/analysis_artifacts/
+```
+
+This prefix includes:
+
+```text
+TUAB-downstream*.md
+tuab_downstream*.json
+tuab_downstream*.csv
+tuab_downstream*.png
+tuab_lp_multiseed_results/
+tuab_lp_patch_transformer_v4_multiseed_results/
+```
+
+Important analysis files:
+
+```text
+tuab_downstream_multiseed_3exp_comparison.png
+tuab_downstream_multiseed_summary.json
+tuab_downstream_multiseed_summary.csv
+tuab_downstream_multiseed_summary_patch_transformer_v4.json
+tuab_downstream_multiseed_summary_patch_transformer_v4.csv
+```
+
+The previous two multiseed downstream evals (`global_local_v2` and
+`harder_global_local_v3`) are preserved under:
+
+```text
+s3://nirmit-dev-vm-storages/lejepa-runs/eeg-basic/analysis_artifacts/tuab_lp_multiseed_results/
+```
+
+and cover:
+
+```text
+seeds: 101, 202, 303, 404, 505
+epochs: 0000 through 0008
+```
+
+The `patch_transformer_v4` multiseed downstream eval chunks are preserved under:
+
+```text
+s3://nirmit-dev-vm-storages/lejepa-runs/eeg-basic/analysis_artifacts/tuab_lp_patch_transformer_v4_multiseed_results/
 ```

@@ -135,7 +135,7 @@ def main(cfg: DictConfig):
 
   if is_rank0():
     wandb.init(
-      project="LeJEPA",
+      project=os.environ.get("WANDB_PROJECT", "LeJEPA"),
       name=(
         f"minimal_inet10_ddp_globalstats_lossfix_v{cfg.V}_bs{cfg.bs}"
         f"_g{world_size}"

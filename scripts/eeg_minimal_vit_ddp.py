@@ -26,10 +26,10 @@ import torch
 import torch.distributed as dist
 import torch.distributed.nn.functional as dist_nn
 import torch.nn as nn
-import torch.nn.functional as F
 import tqdm
 import wandb
 from omegaconf import DictConfig
+from pathlib import Path
 from torch.amp import GradScaler, autocast
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
@@ -179,6 +179,12 @@ def main(cfg: DictConfig):
       name=f"eeg_minimal_vit_1ch_v{cfg.V}_bs{cfg.bs}_g{world_size}",
       config=dict(cfg) | {"world_size": world_size, "global_batch_size": cfg.bs},
     )
+  checkpoint_dir = Path(str(getattr(
+    cfg, "checkpoint_dir", "/home/ubuntu/lejepa-runs/eeg-minimal-vit/checkpoints"
+  )))
+  save_every_epochs = int(getattr(cfg, "save_every_epochs", 1))
+  if is_rank0():
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
   windows = pd.read_parquet(str(cfg.windows_path))
   windows = windows[windows["dataset_id"].eq(str(cfg.dataset_id))].copy()
@@ -227,7 +233,7 @@ def main(cfg: DictConfig):
     optimizer,
     schedulers=[
       LinearLR(optimizer, start_factor=0.01, total_iters=warmup_steps),
-      CosineAnnealingLR(optimizer, T_max=total_steps - warmup_steps, eta_min=1e-6),
+      CosineAnnealingLR(optimizer, T_max=total_steps - warmup_steps, eta_min=1e-3),
     ],
     milestones=[warmup_steps],
   )
@@ -281,6 +287,19 @@ def main(cfg: DictConfig):
       dist.all_reduce(val_count, op=dist.ReduceOp.SUM)
     if is_rank0() and val_count.item() > 0:
       wandb.log({"val/lejepa": (val_loss / val_count).item(), "val/epoch": epoch})
+      if save_every_epochs > 0 and (
+        (epoch + 1) % save_every_epochs == 0 or (epoch + 1) == int(cfg.epochs)
+      ):
+        state = {
+          "epoch": epoch,
+          "model": net.module.state_dict(),
+          "optimizer": optimizer.state_dict(),
+          "scheduler": scheduler.state_dict(),
+          "scaler": scaler.state_dict(),
+          "config": dict(cfg),
+        }
+        torch.save(state, checkpoint_dir / f"epoch={epoch:04d}.pt")
+        torch.save(state, checkpoint_dir / "last.pt")
 
   if is_rank0():
     wandb.finish()

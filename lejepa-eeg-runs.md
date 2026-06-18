@@ -79,7 +79,7 @@ testing whether the view construction gives a non-trivial `inv` loss curve.
 | EEG-003 | 2026-06-15 | `01fa8d6` | `eeg-lejepa-basic` / `https://wandb.ai/ritivel/eeg-lejepa-basic/runs/nj2tldip` | Harder 2 global 30-second views + 2 local 4-second temporal-crop views resized to 30 seconds | `V=4`, `n_global_views=2`, `global_crop_samples=6000`, `local_crop_samples=800`, `bs=256`, `epochs=200`, `jitter_samples=2000`, `channel_dropout_p=0.4`, `time_mask_p=0.8`, `time_mask_frac=0.2`, `noise_std=0.03`, `amp_scale=0.3`, 8xA100 | STOPPED | Harder-view run. Improved training dynamics relative to EEG-001/002, but downstream still peaked early; checkpoints moved to `checkpoints/harder_global_local_v3/`. |
 | EEG-004 | 2026-06-16 | `0c20352` | `eeg-lejepa-basic` / `https://wandb.ai/ritivel/eeg-lejepa-basic/runs/bmstrjyl` | Same harder views as EEG-003, but replace mean-over-channels with attention channel pooling | `V=4`, `n_global_views=2`, `global_crop_samples=6000`, `local_crop_samples=800`, `channel_pool=attention`, `bs=256`, `epochs=200`, `jitter_samples=2000`, `channel_dropout_p=0.4`, `time_mask_p=0.8`, `time_mask_frac=0.2`, `noise_std=0.03`, `amp_scale=0.3`, 8xA100 | STOPPED | Did not perform better than EEG-003. Stopped after epoch 6; checkpoints moved to `checkpoints/attention_channel_pool_v4/`. |
 | EEG-005 | 2026-06-16 | `356811a` | `eeg-lejepa-basic` / run logged from `eeg_patch_transformer_20260616_160644_8gpu.log` | Same harder views as EEG-003, but replace the Conv1D channel-pooling encoder with an EEG channel-time patch transformer | `encoder_type=patch_transformer`, `patch_channels=8`, `patch_time=400`, `transformer_depth=6`, `transformer_heads=8`, `V=4`, `n_global_views=2`, `global_crop_samples=6000`, `local_crop_samples=800`, `bs=256`, `epochs=200`, harder-view augmentations, 8xA100 | STOPPED / EVAL COMPLETE | Exp4 architecture ablation. Checkpoints saved under `checkpoints/patch_transformer_v4/`; 5-seed TUAB LP completed for epochs 0-24. |
-| EEG-006 | 2026-06-17 | `d56c624` | `eeg-lejepa-basic` / `https://wandb.ai/ritivel/eeg-lejepa-basic/runs/yot03n94` | Exp5 EEG-as-image minimal ViT-S/8: PEERS `(128, 6000)` windows converted to one-channel images and transformed to `(1, 128, 128)` views with the ImageNette-style augmentation stack | `scripts/eeg_minimal_vit_ddp.py`, `vit_small_patch8_224`, `in_chans=1`, `img_size=128`, `V=4`, `proj_dim=16`, `lamb=0.02`, `lr=2e-3`, `bs=256`, `epochs=200`, 4xH100 | RUNNING | New branch `eeg-pretraining-exp5-minimal-vit`. Launched on the 4xH100 VM from `/home/ubuntu/lejepa-runs/eeg-minimal-vit/logs/eeg_minimal_vit_20260617_112858_4gpu.log` after syncing the PEERS cache with `s5cmd`. |
+| EEG-006 | 2026-06-17 | `132c443` | `eeg-lejepa-basic` / `https://wandb.ai/ritivel/eeg-lejepa-basic/runs/mhnvy8n3` | Exp5 EEG-as-image minimal ViT-S/8: PEERS `(128, 6000)` windows converted to one-channel images and transformed to `(1, 128, 128)` views with the ImageNette-style augmentation stack | `scripts/eeg_minimal_vit_ddp.py`, `vit_small_patch8_224`, `in_chans=1`, `img_size=128`, `V=4`, `proj_dim=16`, `lamb=0.02`, `lr=2e-3`, `bs=256`, `epochs=200`, 4xH100 | STOPPED / EVAL COMPLETE | Relaunched with checkpoint saving after the first no-checkpoint run. Checkpoints saved under `checkpoints/exp5_minimal_vit_1ch_ckpt/`; 5-seed TUAB LP completed for epochs 0-77. Best 5-seed mean TUAB balanced accuracy was `65.08%` at checkpoint epoch 5, substantially below earlier EEG runs. |
 
 ## View Construction Details
 
@@ -289,3 +289,48 @@ The `patch_transformer_v4` multiseed downstream eval chunks are preserved under:
 ```text
 s3://nirmit-dev-vm-storages/lejepa-runs/eeg-basic/analysis_artifacts/tuab_lp_patch_transformer_v4_multiseed_results/
 ```
+
+## Single-H100 Profiling
+
+Date: 2026-06-17
+
+VM: `68.209.74.204`, `NVIDIA H100 80GB HBM3`
+
+Workspace:
+
+```text
+/home/ubuntu/lejepa-profile-h100/
+```
+
+Profiler:
+
+```text
+scripts/profile_eeg_runs.py
+```
+
+Method:
+
+- PEERS cache synced from `s3://nirmit-dev-vm-storages/eeg-trainer-cache/resampled_200hz_peers/run-20260528T191359Z/final`.
+- Short optimizer-loop profile only: no W&B logging, no checkpointing, bf16 autocast, AdamW, SIGReg + invariance loss.
+- Each point uses warmup steps followed by measured steps and reports optimizer-step wall time with `torch.cuda.synchronize`.
+- `V=4`; samples/sec counts original EEG windows, views/sec counts augmented views.
+
+Results:
+
+| Run | Batch | Step sec | Samples/sec | Views/sec | Max GPU GB |
+|---|---:|---:|---:|---:|---:|
+| `eeg_harder_conv_mean` | 32 | 0.0654 | 489.6 | 1958.2 | 13.9 |
+| `eeg_harder_conv_mean` | 64 | 0.1330 | 481.1 | 1924.4 | 26.3 |
+| `eeg_harder_conv_mean` | 128 | 0.2680 | 477.6 | 1910.5 | 45.2 |
+| `eeg_harder_conv_mean` | 192 | 0.4019 | 477.8 | 1911.1 | 65.3 |
+| `eeg_minimal_vit_1ch` | 32 | 0.0414 | 773.3 | 3093.2 | 5.8 |
+| `eeg_minimal_vit_1ch` | 64 | 0.0733 | 873.5 | 3493.8 | 11.1 |
+| `eeg_minimal_vit_1ch` | 128 | 0.1373 | 932.2 | 3729.0 | 21.7 |
+| `eeg_minimal_vit_1ch` | 256 | 0.2645 | 967.8 | 3871.3 | 42.8 |
+| `eeg_minimal_vit_1ch` | 384 | 0.3950 | 972.2 | 3888.9 | 63.9 |
+
+Notes:
+
+- `eeg_harder_conv_mean` OOMed at `batch=256` on one H100. This is expected because the 8-GPU training run's `bs=256` is a global DDP batch, i.e. local batch `32` per GPU.
+- The Conv EEG path saturates around `~480 samples/sec` on one H100; increasing batch mostly increases memory without improving throughput.
+- The EEG-as-image minimal ViT path reaches `~970 samples/sec` by `batch=256-384`, about `2x` the Conv EEG path in this single-GPU profile.
